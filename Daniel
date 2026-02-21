@@ -1,202 +1,116 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-from datetime import datetime, timedelta
-
-# Configurações iniciais
-st.set_page_config(page_title="Gestão de Transportes Pro", layout="wide")
-
-# --- BANCO DE DADOS ---
-conn = sqlite3.connect('financeiro_transporte.db', check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS financeiro 
-             (tipo TEXT, categoria TEXT, valor REAL, sinal_pct REAL, km_inicial REAL, km_final REAL, data TEXT)''')
-conn.commit()
-
-# --- SIDEBAR (METAS E NAVEGAÇÃO) ---
-st.sidebar.title("Configurações")
-meta_diaria = st.sidebar.number_input("Sua Meta Diária (R$)", value=300.0)
-menu = st.sidebar.selectbox("Ir para:", ["Registrar Hoje", "Relatórios Diários", "Visão Semana/Mês"])
-
-# --- LÓGICA DE REGISTRO ---
-if menu == "Registrar Hoje":
-    st.header("📝 Registro de Atividades")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Entradas")
-        tipo_entrada = st.selectbox("Categoria de Entrada", ["Uber", "Comissão", "Particular", "Transfer", "City tour", "Outros"])
-        valor_total = st.number_input("Valor Total do Serviço (R$)", min_value=0.0)
-        
-        # Campo de Sinal para City Tour e Transfer
-        sinal = 0.0
-        if tipo_entrada in ["Transfer", "City tour"]:
-            sinal = st.slider("Sinal recebido (%)", 0, 100, 0)
-            valor_sinal = (valor_total * sinal) / 100
-            st.info(f"Valor do Sinal: R$ {valor_sinal:.2f}")
-
-    with col2:
-        st.subheader("Saídas / KM")
-        cat_saida = st.selectbox("Categoria de Saída", ["Nenhuma", "Gasolina", "Alimentação", "Mercado", "Contas de Consumo", "Aluguel carro", "Aluguel casa"])
-        valor_saida = st.number_input("Valor da Saída (R$)", min_value=0.0)
-        
-        st.divider()
-        km_i = st.number_input("KM Inicial", min_value=0.0)
-        km_f = st.number_input("KM Final", min_value=0.0)
-
-    if st.button("Salvar Registro"):
-        data_hoje = datetime.now().strftime("%Y-%m-%d")
-        # Salva Entrada (se houver)
-        if valor_total > 0:
-            c.execute("INSERT INTO financeiro VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                      ('Entrada', tipo_entrada, valor_total, sinal, km_i, km_f, data_hoje))
-        # Salva Saída (se houver)
-        if valor_saida > 0:
-            c.execute("INSERT INTO financeiro VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                      ('Saída', cat_saida, valor_saida, 0, 0, 0, data_hoje))
-        conn.commit()
-        st.success("Dados salvos com sucesso!")
-
-# --- LÓGICA DE RELATÓRIOS ---
-else:
-    df = pd.read_sql_query("SELECT * FROM financeiro", conn)
-    df['data'] = pd.to_datetime(df['data'])
-    
-    if menu == "Relatórios Diários":
-        hoje = datetime.now().date()
-        df_hoje = df[df['data'].dt.date == hoje]
-        
-        ganho_hoje = df_hoje[df_hoje['tipo'] == 'Entrada']['valor'].sum()
-        gasto_hoje = df_hoje[df_hoje['tipo'] == 'Saída']['valor'].sum()
-        
-        st.header(f"Resumo de Hoje: {hoje.strftime('%d/%m/%Y')}")
-        
-        # Barra de Meta
-        progresso = min(ganho_hoje / meta_diaria, 1.0) if meta_diaria > 0 else 0
-        st.write(f"Meta Diária: R$ {ganho_hoje:.2f} / R$ {meta_diaria:.2f}")
-        st.progress(progresso)
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Ganhos", f"R$ {ganho_hoje:.2f}")
-        col2.metric("Gastos", f"R$ {gasto_hoje:.2f}")
-        col3.metric("Saldo", f"R$ {ganho_hoje - gasto_hoje:.2f}")
-
-import streamlit as st
-import pandas as pd
-import sqlite3
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Daniel | Gestão Integrada", layout="wide")
-
-# --- BANCO DE DADOS ---
-conn = sqlite3.connect('gestao_daniel_final.db', check_same_thread=False)
-c = conn.cursor()
-
-# Tabela de Caixa (Onde os gráficos buscam dados)
-c.execute('''CREATE TABLE IF NOT EXISTS financeiro 
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, cat TEXT, valor REAL, data DATE)''')
-
-# Tabela de Agenda
-c.execute('''CREATE TABLE IF NOT EXISTS agenda 
-             (id INTEGER PRIMARY KEY AUTOINCREMENT, cliente TEXT, servico TEXT, 
-              valor_total REAL, sinal REAL, data_servico DATE, status TEXT)''')
-conn.commit()
-
-# --- SIDEBAR ---
-st.sidebar.title("📲 Menu de Gestão")
-aba = st.sidebar.radio("Ir para:", ["📊 Dashboard", "📅 Agenda & Clientes", "💸 Lançar Despesas", "📋 Relatórios"])
-
-# --- ABA: AGENDA ---
-if aba == "📅 Agenda & Clientes":
-    st.title("📅 Agenda de Serviços")
-    
-    t1, t2 = st.tabs(["Ver Compromissos", "Novo Agendamento"])
-    
-    with t2:
-        with st.form("novo_agendamento"):
-            c1, c2 = st.columns(2)
-            cliente = c1.text_input("Nome do Cliente")
-            servico = c1.selectbox("Tipo de Serviço", ["Transfer", "City Tour", "Particular", "Diária"])
-            data_s = c2.date_input("Data do Serviço", datetime.now())
-            v_total = c2.number_input("Valor Total Combinado (R$)", 0.0)
-            v_sinal = c2.number_input("Sinal Pago (R$)", 0.0)
-            
-            if st.form_submit_button("Confirmar Agendamento"):
-                status = "Sinal Pago" if v_sinal > 0 else "Pendente"
-                c.execute("INSERT INTO agenda (cliente, servico, valor_total, sinal, data_servico, status) VALUES (?,?,?,?,?,?)",
-                          (cliente, servico, v_total, v_sinal, data_s, status))
-                # Se houve sinal, já lança como entrada no financeiro hoje
-                if v_sinal > 0:
-                    c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)",
-                              ("Entrada", f"Sinal: {cliente}", v_sinal, datetime.now().date()))
-                conn.commit()
-                st.success("Agendado e sinal registrado no caixa!")
-
-    with t1:
-        df_ag = pd.read_sql_query("SELECT * FROM agenda WHERE status != 'Finalizado' ORDER BY data_servico ASC", conn)
-        if not df_ag.empty:
-            df_ag['Restante'] = df_ag['valor_total'] - df_ag['sinal']
-            st.dataframe(df_ag, use_container_width=True)
-            
-            st.divider()
-            st.subheader("🏁 Finalizar Serviço")
-            id_sel = st.selectbox("Selecione o serviço concluído:", df_ag['id'].tolist(), 
-                                  format_func=lambda x: f"ID {x} - {df_ag[df_ag['id']==x]['cliente'].values[0]}")
-            
-            if st.button("Receber Saldo e Finalizar"):
-                servico_atual = df_ag[df_ag['id'] == id_sel].iloc[0]
-                restante = servico_atual['Restante']
-                
-                # 1. Atualiza status na agenda
-                c.execute("UPDATE agenda SET status='Finalizado' WHERE id=?", (id_sel,))
-                # 2. Lança o restante no financeiro
-                c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)",
-                          ("Entrada", f"Saldo: {servico_atual['cliente']}", restante, datetime.now().date()))
-                conn.commit()
-                st.balloons()
-                st.rerun()
+# --- SEGURANÇA ---
+def check_password():
+    def password_entered():
+        if st.session_state["password"] == "admin123":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
         else:
-            st.info("Nenhum serviço pendente na agenda.")
+            st.session_state["password_correct"] = False
 
-# --- ABA: DASHBOARD ---
-elif aba == "📊 Dashboard":
-    st.title("📈 Performance Financeira")
-    df_f = pd.read_sql_query("SELECT * FROM financeiro", conn)
-    
-    if not df_f.empty:
-        df_f['data'] = pd.to_datetime(df_f['data'])
-        bruto = df_f[df_f['tipo'] == 'Entrada']['valor'].sum()
-        gastos = df_f[df_f['tipo'] == 'Saída']['valor'].sum()
-        liquido = bruto - gastos
+    if "password_correct" not in st.session_state:
+        st.title("🔐 Acesso Restrito - Daniel")
+        st.text_input("Digite a senha", type="password", on_change=password_entered, key="password")
+        return False
+    return st.session_state["password_correct"]
+
+if check_password():
+    # --- CONFIGURAÇÃO E BANCO DE DADOS ---
+    st.set_page_config(page_title="Gestão Daniel VIP", layout="wide")
+    conn = sqlite3.connect('dados_viva_daniel.db', check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS financeiro (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, cat TEXT, valor REAL, data DATE)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS agenda (id INTEGER PRIMARY KEY AUTOINCREMENT, cliente TEXT, servico TEXT, valor_total REAL, sinal REAL, data_servico DATE, status TEXT)''')
+    conn.commit()
+
+    # --- MENU LATERAL ---
+    st.sidebar.title("📲 Menu Principal")
+    aba = st.sidebar.radio("Navegação", ["📊 Dashboard", "📅 Agenda & Sinais", "💸 Saídas/Gastos", "📋 Relatório Geral"])
+
+    # --- ABA: DASHBOARD ---
+    if aba == "📊 Dashboard":
+        st.title("📊 Resumo do Negócio")
+        df_f = pd.read_sql_query("SELECT * FROM financeiro", conn)
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Faturamento Total", f"R$ {bruto:,.2f}")
-        c2.metric("Despesas Totais", f"R$ {gastos:,.2f}", delta_color="inverse")
-        c3.metric("Lucro Líquido", f"R$ {liquido:,.2f}")
+        if not df_f.empty:
+            df_f['data'] = pd.to_datetime(df_f['data'])
+            bruto = df_f[df_f['tipo'] == 'Entrada']['valor'].sum()
+            gastos = df_f[df_f['tipo'] == 'Saída']['valor'].sum()
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Faturamento Bruto", f"R$ {bruto:,.2f}")
+            c2.metric("Despesas Totais", f"R$ {gastos:,.2f}", delta_color="inverse")
+            c3.metric("Lucro Líquido", f"R$ {bruto - gastos:,.2f}")
+
+            st.divider()
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                fig_pizza = px.pie(df_f[df_f['tipo']=='Entrada'], values='valor', names='cat', title="Origem das Entradas")
+                st.plotly_chart(fig_pizza, use_container_width=True)
+            with col_g2:
+                df_evolucao = df_f.groupby('data')['valor'].sum().reset_index()
+                fig_linha = px.line(df_evolucao, x='data', y='valor', title="Evolução Financeira")
+                st.plotly_chart(fig_linha, use_container_width=True)
+        else:
+            st.info("Lance dados na Agenda ou Gastos para ativar os gráficos.")
+
+    # --- ABA: AGENDA ---
+    elif aba == "📅 Agenda & Sinais":
+        st.title("📅 Agendamentos e Recebimentos")
+        t1, t2 = st.tabs(["📋 Lista de Clientes", "➕ Novo Agendamento"])
         
-        fig = px.line(df_f.groupby('data')['valor'].sum().reset_index(), x='data', y='valor', title="Evolução do Faturamento")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("Sem dados financeiros para exibir.")
+        with t2:
+            with st.form("add_agenda"):
+                col1, col2 = st.columns(2)
+                cli = col1.text_input("Nome do Cliente")
+                serv = col1.selectbox("Serviço", ["Transfer", "City Tour", "Particular", "Outros"])
+                dat_s = col2.date_input("Data do Serviço")
+                v_tot = col2.number_input("Valor Total Combinado", 0.0)
+                v_sin = col2.number_input("Valor do Sinal Pago", 0.0)
+                if st.form_submit_button("Agendar"):
+                    status = "Sinal Pago" if v_sin > 0 else "Pendente"
+                    c.execute("INSERT INTO agenda (cliente, servico, valor_total, sinal, data_servico, status) VALUES (?,?,?,?,?,?)",
+                              (cli, serv, v_tot, v_sin, dat_s, status))
+                    if v_sin > 0:
+                        c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)", ("Entrada", f"Sinal: {cli}", v_sin, datetime.now().date()))
+                    conn.commit()
+                    st.success("✅ Agendamento Realizado!")
+        
+        with t1:
+            df_ag = pd.read_sql_query("SELECT * FROM agenda WHERE status != 'Finalizado'", conn)
+            if not df_ag.empty:
+                df_ag['Restante'] = df_ag['valor_total'] - df_ag['sinal']
+                st.dataframe(df_ag, use_container_width=True)
+                st.divider()
+                id_f = st.selectbox("Selecione ID do serviço concluído hoje:", df_ag['id'].tolist())
+                if st.button("🏁 Confirmar Recebimento e Finalizar"):
+                    row = df_ag[df_ag['id'] == id_f].iloc[0]
+                    restante = row['valor_total'] - row['sinal']
+                    c.execute("UPDATE agenda SET status='Finalizado' WHERE id=?", (id_f,))
+                    c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)", ("Entrada", f"Saldo: {row['cliente']}", restante, datetime.now().date()))
+                    conn.commit()
+                    st.rerun()
+            else:
+                st.info("Nenhum agendamento pendente.")
 
-# --- ABA: DESPESAS ---
-elif aba == "💸 Lançar Despesas":
-    st.header("⛽ Registro de Gastos")
-    with st.form("gastos"):
-        cat_g = st.selectbox("Categoria", ["Combustível", "Manutenção", "Aluguel", "Alimentação", "Outros"])
-        val_g = st.number_input("Valor gasto (R$)", 0.0)
-        dat_g = st.date_input("Data", datetime.now())
-        if st.form_submit_button("Salvar Gasto"):
-            c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)",
-                      ("Saída", cat_g, val_g, dat_g))
-            conn.commit()
-            st.success("Gasto registrado!")
+    # --- ABA: GASTOS ---
+    elif aba == "💸 Saídas/Gastos":
+        st.title("💸 Registro de Despesas")
+        with st.form("gastos"):
+            cat_s = st.selectbox("Categoria", ["Gasolina", "Alimentação", "Manutenção", "Aluguel Carro", "Aluguel Casa", "Outros"])
+            val_s = st.number_input("Valor do Gasto", 0.0)
+            if st.form_submit_button("Salvar Despesa"):
+                c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)", ("Saída", cat_s, val_s, datetime.now().date()))
+                conn.commit()
+                st.success("Despesa registrada!")
 
-# --- ABA: RELATÓRIOS ---
-elif aba == "📋 Relatórios":
-    st.header("Relatório Geral")
-    df_all = pd.read_sql_query("SELECT * FROM financeiro ORDER BY data DESC", conn)
-    st.dataframe(df_all, use_container_width=True)
+    # --- ABA: HISTÓRICO ---
+    elif aba == "📋 Relatório Geral":
+        st.title("📋 Histórico de Movimentações")
+        df_hist = pd.read_sql_query("SELECT * FROM financeiro ORDER BY data DESC", conn)
+        st.dataframe(df_hist, use_container_width=True)
