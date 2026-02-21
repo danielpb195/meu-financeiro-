@@ -82,14 +82,121 @@ else:
         col2.metric("Gastos", f"R$ {gasto_hoje:.2f}")
         col3.metric("Saldo", f"R$ {ganho_hoje - gasto_hoje:.2f}")
 
-    elif menu == "Visão Semana/Mês":
-        st.header("Análise por Período")
-        periodo = st.radio("Escolha a visão:", ["Últimos 7 Dias", "Mês Atual"])
+import streamlit as st
+import pandas as pd
+import sqlite3
+import plotly.express as px
+from datetime import datetime, timedelta
+
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Daniel | Gestão Integrada", layout="wide")
+
+# --- BANCO DE DADOS ---
+conn = sqlite3.connect('gestao_daniel_final.db', check_same_thread=False)
+c = conn.cursor()
+
+# Tabela de Caixa (Onde os gráficos buscam dados)
+c.execute('''CREATE TABLE IF NOT EXISTS financeiro 
+             (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, cat TEXT, valor REAL, data DATE)''')
+
+# Tabela de Agenda
+c.execute('''CREATE TABLE IF NOT EXISTS agenda 
+             (id INTEGER PRIMARY KEY AUTOINCREMENT, cliente TEXT, servico TEXT, 
+              valor_total REAL, sinal REAL, data_servico DATE, status TEXT)''')
+conn.commit()
+
+# --- SIDEBAR ---
+st.sidebar.title("📲 Menu de Gestão")
+aba = st.sidebar.radio("Ir para:", ["📊 Dashboard", "📅 Agenda & Clientes", "💸 Lançar Despesas", "📋 Relatórios"])
+
+# --- ABA: AGENDA ---
+if aba == "📅 Agenda & Clientes":
+    st.title("📅 Agenda de Serviços")
+    
+    t1, t2 = st.tabs(["Ver Compromissos", "Novo Agendamento"])
+    
+    with t2:
+        with st.form("novo_agendamento"):
+            c1, c2 = st.columns(2)
+            cliente = c1.text_input("Nome do Cliente")
+            servico = c1.selectbox("Tipo de Serviço", ["Transfer", "City Tour", "Particular", "Diária"])
+            data_s = c2.date_input("Data do Serviço", datetime.now())
+            v_total = c2.number_input("Valor Total Combinado (R$)", 0.0)
+            v_sinal = c2.number_input("Sinal Pago (R$)", 0.0)
+            
+            if st.form_submit_button("Confirmar Agendamento"):
+                status = "Sinal Pago" if v_sinal > 0 else "Pendente"
+                c.execute("INSERT INTO agenda (cliente, servico, valor_total, sinal, data_servico, status) VALUES (?,?,?,?,?,?)",
+                          (cliente, servico, v_total, v_sinal, data_s, status))
+                # Se houve sinal, já lança como entrada no financeiro hoje
+                if v_sinal > 0:
+                    c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)",
+                              ("Entrada", f"Sinal: {cliente}", v_sinal, datetime.now().date()))
+                conn.commit()
+                st.success("Agendado e sinal registrado no caixa!")
+
+    with t1:
+        df_ag = pd.read_sql_query("SELECT * FROM agenda WHERE status != 'Finalizado' ORDER BY data_servico ASC", conn)
+        if not df_ag.empty:
+            df_ag['Restante'] = df_ag['valor_total'] - df_ag['sinal']
+            st.dataframe(df_ag, use_container_width=True)
+            
+            st.divider()
+            st.subheader("🏁 Finalizar Serviço")
+            id_sel = st.selectbox("Selecione o serviço concluído:", df_ag['id'].tolist(), 
+                                  format_func=lambda x: f"ID {x} - {df_ag[df_ag['id']==x]['cliente'].values[0]}")
+            
+            if st.button("Receber Saldo e Finalizar"):
+                servico_atual = df_ag[df_ag['id'] == id_sel].iloc[0]
+                restante = servico_atual['Restante']
+                
+                # 1. Atualiza status na agenda
+                c.execute("UPDATE agenda SET status='Finalizado' WHERE id=?", (id_sel,))
+                # 2. Lança o restante no financeiro
+                c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)",
+                          ("Entrada", f"Saldo: {servico_atual['cliente']}", restante, datetime.now().date()))
+                conn.commit()
+                st.balloons()
+                st.rerun()
+        else:
+            st.info("Nenhum serviço pendente na agenda.")
+
+# --- ABA: DASHBOARD ---
+elif aba == "📊 Dashboard":
+    st.title("📈 Performance Financeira")
+    df_f = pd.read_sql_query("SELECT * FROM financeiro", conn)
+    
+    if not df_f.empty:
+        df_f['data'] = pd.to_datetime(df_f['data'])
+        bruto = df_f[df_f['tipo'] == 'Entrada']['valor'].sum()
+        gastos = df_f[df_f['tipo'] == 'Saída']['valor'].sum()
+        liquido = bruto - gastos
         
-        data_limite = datetime.now() - timedelta(days=7) if periodo == "Últimos 7 Dias" else datetime.now().replace(day=1)
-        df_filtro = df[df['data'] >= data_limite]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Faturamento Total", f"R$ {bruto:,.2f}")
+        c2.metric("Despesas Totais", f"R$ {gastos:,.2f}", delta_color="inverse")
+        c3.metric("Lucro Líquido", f"R$ {liquido:,.2f}")
         
-        st.dataframe(df_filtro, use_container_width=True)
-        
-        resumo = df_filtro.groupby('tipo')['valor'].sum()
-        st.json(resumo.to_dict())
+        fig = px.line(df_f.groupby('data')['valor'].sum().reset_index(), x='data', y='valor', title="Evolução do Faturamento")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Sem dados financeiros para exibir.")
+
+# --- ABA: DESPESAS ---
+elif aba == "💸 Lançar Despesas":
+    st.header("⛽ Registro de Gastos")
+    with st.form("gastos"):
+        cat_g = st.selectbox("Categoria", ["Combustível", "Manutenção", "Aluguel", "Alimentação", "Outros"])
+        val_g = st.number_input("Valor gasto (R$)", 0.0)
+        dat_g = st.date_input("Data", datetime.now())
+        if st.form_submit_button("Salvar Gasto"):
+            c.execute("INSERT INTO financeiro (tipo, cat, valor, data) VALUES (?,?,?,?)",
+                      ("Saída", cat_g, val_g, dat_g))
+            conn.commit()
+            st.success("Gasto registrado!")
+
+# --- ABA: RELATÓRIOS ---
+elif aba == "📋 Relatórios":
+    st.header("Relatório Geral")
+    df_all = pd.read_sql_query("SELECT * FROM financeiro ORDER BY data DESC", conn)
+    st.dataframe(df_all, use_container_width=True)
