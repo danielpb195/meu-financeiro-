@@ -1,0 +1,95 @@
+import streamlit as st
+import pandas as pd
+import sqlite3
+from datetime import datetime, timedelta
+
+# Configurações iniciais
+st.set_page_config(page_title="Gestão de Transportes Pro", layout="wide")
+
+# --- BANCO DE DADOS ---
+conn = sqlite3.connect('financeiro_transporte.db', check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS financeiro 
+             (tipo TEXT, categoria TEXT, valor REAL, sinal_pct REAL, km_inicial REAL, km_final REAL, data TEXT)''')
+conn.commit()
+
+# --- SIDEBAR (METAS E NAVEGAÇÃO) ---
+st.sidebar.title("Configurações")
+meta_diaria = st.sidebar.number_input("Sua Meta Diária (R$)", value=300.0)
+menu = st.sidebar.selectbox("Ir para:", ["Registrar Hoje", "Relatórios Diários", "Visão Semana/Mês"])
+
+# --- LÓGICA DE REGISTRO ---
+if menu == "Registrar Hoje":
+    st.header("📝 Registro de Atividades")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Entradas")
+        tipo_entrada = st.selectbox("Categoria de Entrada", ["Uber", "Comissão", "Particular", "Transfer", "City tour", "Outros"])
+        valor_total = st.number_input("Valor Total do Serviço (R$)", min_value=0.0)
+        
+        # Campo de Sinal para City Tour e Transfer
+        sinal = 0.0
+        if tipo_entrada in ["Transfer", "City tour"]:
+            sinal = st.slider("Sinal recebido (%)", 0, 100, 0)
+            valor_sinal = (valor_total * sinal) / 100
+            st.info(f"Valor do Sinal: R$ {valor_sinal:.2f}")
+
+    with col2:
+        st.subheader("Saídas / KM")
+        cat_saida = st.selectbox("Categoria de Saída", ["Nenhuma", "Gasolina", "Alimentação", "Mercado", "Contas de Consumo", "Aluguel carro", "Aluguel casa"])
+        valor_saida = st.number_input("Valor da Saída (R$)", min_value=0.0)
+        
+        st.divider()
+        km_i = st.number_input("KM Inicial", min_value=0.0)
+        km_f = st.number_input("KM Final", min_value=0.0)
+
+    if st.button("Salvar Registro"):
+        data_hoje = datetime.now().strftime("%Y-%m-%d")
+        # Salva Entrada (se houver)
+        if valor_total > 0:
+            c.execute("INSERT INTO financeiro VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                      ('Entrada', tipo_entrada, valor_total, sinal, km_i, km_f, data_hoje))
+        # Salva Saída (se houver)
+        if valor_saida > 0:
+            c.execute("INSERT INTO financeiro VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                      ('Saída', cat_saida, valor_saida, 0, 0, 0, data_hoje))
+        conn.commit()
+        st.success("Dados salvos com sucesso!")
+
+# --- LÓGICA DE RELATÓRIOS ---
+else:
+    df = pd.read_sql_query("SELECT * FROM financeiro", conn)
+    df['data'] = pd.to_datetime(df['data'])
+    
+    if menu == "Relatórios Diários":
+        hoje = datetime.now().date()
+        df_hoje = df[df['data'].dt.date == hoje]
+        
+        ganho_hoje = df_hoje[df_hoje['tipo'] == 'Entrada']['valor'].sum()
+        gasto_hoje = df_hoje[df_hoje['tipo'] == 'Saída']['valor'].sum()
+        
+        st.header(f"Resumo de Hoje: {hoje.strftime('%d/%m/%Y')}")
+        
+        # Barra de Meta
+        progresso = min(ganho_hoje / meta_diaria, 1.0) if meta_diaria > 0 else 0
+        st.write(f"Meta Diária: R$ {ganho_hoje:.2f} / R$ {meta_diaria:.2f}")
+        st.progress(progresso)
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Ganhos", f"R$ {ganho_hoje:.2f}")
+        col2.metric("Gastos", f"R$ {gasto_hoje:.2f}")
+        col3.metric("Saldo", f"R$ {ganho_hoje - gasto_hoje:.2f}")
+
+    elif menu == "Visão Semana/Mês":
+        st.header("Análise por Período")
+        periodo = st.radio("Escolha a visão:", ["Últimos 7 Dias", "Mês Atual"])
+        
+        data_limite = datetime.now() - timedelta(days=7) if periodo == "Últimos 7 Dias" else datetime.now().replace(day=1)
+        df_filtro = df[df['data'] >= data_limite]
+        
+        st.dataframe(df_filtro, use_container_width=True)
+        
+        resumo = df_filtro.groupby('tipo')['valor'].sum()
+        st.json(resumo.to_dict())
